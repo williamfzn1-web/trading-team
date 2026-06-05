@@ -155,47 +155,128 @@ def _bitget_filter(strategy_name: str, signal, bitget_ctx: dict) -> tuple:
     Apply Bitget live market data as a second-pass filter on top of strategy signals.
     Returns (allowed: bool, reason: str).
 
-    Rules:
-    - Arbitrage: extreme funding rate blocks opposing direction (funding squeeze risk)
-    - Macro/Sentiment: crowded positioning (>68% longs or <32% longs) blocks trend-following
-    - Capital Flow: positive funding confirms long; negative confirms short
-    - Whale Hunting: open interest context appended to reason
+    Integrated strategies (11 total):
+    - Arbitrage: extreme funding blocks opposing direction
+    - Macro/Sentiment: crowd positioning blocks trend-following
+    - Capital Flow: funding rate confirms or blocks flow direction
+    - Whale Hunting: OI appended; extreme funding blocks against squeeze
+    - On-chain Data: high funding = speculator overcrowd, block longs
+    - SMC: funding rate aligns with smart money direction
+    - Liquidity: long/short ratio predicts which stops are denser
+    - Wyckoff Spring: crowd imbalance confirms spring reversal
+    - Order Flow: funding must align with VDP direction
+    - Mean Reversion: extreme funding strengthens contrarian signal
+    - Auction Theory: funding + crowd confirms auction balance/imbalance
     """
     if not bitget_ctx or signal.action == "hold":
         return True, ""
 
-    rate = bitget_ctx.get("funding_rate", 0.0)      # % e.g. +0.012
+    rate = bitget_ctx.get("funding_rate", 0.0)
     long_pct = bitget_ctx.get("long_pct", 50.0)
+    short_pct = bitget_ctx.get("short_pct", 50.0)
     oi = bitget_ctx.get("open_interest", 0)
     action = signal.action
 
+    # ── Arbitrage ─────────────────────────────────────────────────────────────
     if strategy_name == "Arbitrage":
-        # Funding > 0.08%: longs paying heavily → don't open new longs (squeeze risk)
         if rate > 0.08 and action == "long":
-            return False, f"Bitget funding {rate:+.4f}% too high — long squeeze risk blocked"
-        # Funding < -0.04%: shorts paying → don't open new shorts
+            return False, f"Bitget funding {rate:+.4f}% — long squeeze risk blocked"
         if rate < -0.04 and action == "short":
             return False, f"Bitget funding {rate:+.4f}% negative — short squeeze risk blocked"
 
+    # ── Macro/Sentiment ────────────────────────────────────────────────────────
     elif strategy_name == "Macro/Sentiment":
-        # Crowd too long (>68%) → contrarian: block new longs
         if long_pct > 68 and action == "long":
             return False, f"Bitget crowd {long_pct:.0f}% long — too crowded, blocking long"
-        # Crowd too short (<32%) → contrarian: block new shorts
         if long_pct < 32 and action == "short":
             return False, f"Bitget crowd {long_pct:.0f}% long — oversold crowd, blocking short"
 
+    # ── Capital Flow ───────────────────────────────────────────────────────────
     elif strategy_name == "Capital Flow":
-        # Funding confirms trend: positive funding = bullish flow
         if rate > 0.02 and action == "short":
             return False, f"Bitget funding {rate:+.4f}% — capital inflow, blocking short"
         if rate < -0.02 and action == "long":
             return False, f"Bitget funding {rate:+.4f}% — capital outflow, blocking long"
 
+    # ── Whale Hunting ──────────────────────────────────────────────────────────
     elif strategy_name == "Whale Hunting":
-        # Append OI context to reason (informational, never blocks)
         if oi > 0:
             signal.reason += f" | Bitget OI={oi:,.0f} BTC"
+        # Extreme funding against position = squeeze risk even for whales
+        if rate > 0.10 and action == "long":
+            return False, f"Bitget funding {rate:+.4f}% extreme — whale long squeeze risk"
+        if rate < -0.05 and action == "short":
+            return False, f"Bitget funding {rate:+.4f}% extreme — whale short squeeze risk"
+
+    # ── On-chain Data ──────────────────────────────────────────────────────────
+    # High funding = speculators overcrowded on longs → holders' edge eroded
+    elif strategy_name == "On-chain Data":
+        if rate > 0.06 and action == "long":
+            return False, f"Bitget funding {rate:+.4f}% — speculator overleverage, on-chain long blocked"
+        if rate < -0.03 and action == "short":
+            return False, f"Bitget funding {rate:+.4f}% — short overleverage, on-chain short blocked"
+
+    # ── SMC (Smart Money Concepts) ─────────────────────────────────────────────
+    # Smart money typically receives funding → high funding means smart money is short
+    elif strategy_name == "SMC":
+        if rate > 0.07 and action == "long":
+            return False, f"Bitget funding {rate:+.4f}% — smart money likely short, blocking long"
+        if rate < -0.04 and action == "short":
+            return False, f"Bitget funding {rate:+.4f}% — smart money likely long, blocking short"
+        signal.reason += f" | Bitget funding {rate:+.4f}%"
+
+    # ── Liquidity ──────────────────────────────────────────────────────────────
+    # >65% longs = dense stops below (bullish sweep more likely to succeed)
+    # <35% longs = dense stops above (bearish sweep more likely to succeed)
+    elif strategy_name == "Liquidity":
+        if action == "long" and long_pct < 40:
+            return False, f"Bitget {long_pct:.0f}% long — sparse stop pool below, sweep less likely"
+        if action == "short" and long_pct > 60:
+            return False, f"Bitget {long_pct:.0f}% long — sparse stop pool above, sweep less likely"
+        signal.reason += f" | LSR {long_pct:.0f}%L/{short_pct:.0f}%S"
+
+    # ── Wyckoff Spring ─────────────────────────────────────────────────────────
+    # Spring requires crowd to be wrong → contrarian confirmation via LSR
+    elif strategy_name == "Wyckoff Spring":
+        if action == "long" and long_pct < 38:
+            return False, f"Bitget {long_pct:.0f}% long — crowd already short, spring invalid"
+        if action == "short" and long_pct > 62:
+            return False, f"Bitget {long_pct:.0f}% long — crowd already long, spring invalid"
+        signal.reason += f" | Bitget LSR {long_pct:.0f}%L"
+
+    # ── Order Flow ─────────────────────────────────────────────────────────────
+    # Funding direction should agree with VDP cross
+    elif strategy_name == "Order Flow":
+        if action == "long" and rate < -0.03:
+            return False, f"Bitget funding {rate:+.4f}% — flow divergence, blocking long"
+        if action == "short" and rate > 0.05:
+            return False, f"Bitget funding {rate:+.4f}% — flow divergence, blocking short"
+        signal.reason += f" | Bitget funding {rate:+.4f}%"
+
+    # ── Mean Reversion ─────────────────────────────────────────────────────────
+    # Extreme funding = more fuel for reversion; mild funding = less edge
+    elif strategy_name == "Mean Reversion":
+        if action == "long" and rate > 0.07:
+            # Extreme positive funding = funding squeeze ahead, boosts long reversion
+            signal.reason += f" | Bitget funding {rate:+.4f}% (squeeze fuel)"
+        elif action == "long" and rate < -0.05:
+            return False, f"Bitget funding {rate:+.4f}% — shorts being paid, reversion risk"
+        if action == "short" and rate < -0.06:
+            signal.reason += f" | Bitget funding {rate:+.4f}% (short squeeze fuel)"
+        elif action == "short" and rate > 0.04:
+            return False, f"Bitget funding {rate:+.4f}% — longs being paid, reversion risk"
+
+    # ── Auction Theory ─────────────────────────────────────────────────────────
+    # Funding confirms auction direction; crowd imbalance signals value area break
+    elif strategy_name == "Auction Theory":
+        if action == "long" and rate < -0.04:
+            return False, f"Bitget funding {rate:+.4f}% — auction selling pressure, blocking long"
+        if action == "short" and rate > 0.06:
+            return False, f"Bitget funding {rate:+.4f}% — auction buying pressure, blocking short"
+        # Crowd imbalance = auction about to break value area
+        if long_pct > 65 and action == "long":
+            return False, f"Bitget {long_pct:.0f}% long — auction crowd skewed, blocking long"
+        signal.reason += f" | Bitget {rate:+.4f}% / {long_pct:.0f}%L"
 
     return True, ""
 
