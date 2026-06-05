@@ -101,6 +101,19 @@ _BYBIT_MAP = {
     "MATICUSDT": "MATIC/USDT",
 }
 
+_BITGET_MAP = {
+    "BTCUSDT": "BTC/USDT",
+    "ETHUSDT": "ETH/USDT",
+    "SOLUSDT": "SOL/USDT",
+    "BNBUSDT": "BNB/USDT",
+    "XRPUSDT": "XRP/USDT",
+    "ADAUSDT": "ADA/USDT",
+    "AVAXUSDT": "AVAX/USDT",
+    "DOTUSDT": "DOT/USDT",
+    "LINKUSDT": "LINK/USDT",
+    "MATICUSDT": "MATIC/USDT",
+}
+
 _GECKO_IDS = "bitcoin,ethereum,solana,binancecoin,ripple,cardano,avalanche-2,polkadot,chainlink,matic-network"
 _GECKO_ID_MAP = {
     "bitcoin": "BTC/USDT",
@@ -133,6 +146,25 @@ def _http_get(url: str):
 async def _fetch(url: str):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _http_get, url)
+
+
+async def _try_bitget() -> dict:
+    url = "https://api.bitget.com/api/v2/mix/market/tickers?productType=USDT-FUTURES"
+    data = (await _fetch(url)).get("data", [])
+    result = {}
+    for t in data:
+        sym = t.get("symbol", "")
+        if sym in _BITGET_MAP:
+            last = float(t.get("lastPr", 0) or 0)
+            change = float(t.get("change24h", 0) or 0) * 100
+            result[_BITGET_MAP[sym]] = {
+                "price": last,
+                "change_24h": round(change, 2),
+                "volume_24h": float(t.get("quoteVolume", 0) or 0),
+                "high_24h": float(t.get("high24h", 0) or 0),
+                "low_24h": float(t.get("low24h", 0) or 0),
+            }
+    return result
 
 
 async def _try_bybit() -> dict:
@@ -187,6 +219,7 @@ async def _try_coingecko() -> dict:
 
 async def fetch_prices() -> dict:
     sources = [
+        ("bitget", _try_bitget),
         (
             "futures",
             lambda: _try_binance(
