@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: trading-team-api
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ALLOWED_ORIGINS
+        value: https://trading-team.vercel.app
+      - key: ANTHROPIC_API_KEY
+        sync: false
