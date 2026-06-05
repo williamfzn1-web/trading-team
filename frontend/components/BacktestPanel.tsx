@@ -168,7 +168,7 @@ export default function BacktestPanel() {
       const isRunning = runningCount + pending > 0;
       const total = pending + runningCount + completed + failed;
 
-      setProgress({ done: completed + failed, total, active: s["active_strategy"] ?? null });
+      setProgress({ done: completed + failed, total, active: s["active_strategy"] != null ? String(s["active_strategy"]) : null });
       setRunning(isRunning);
       loadLatest(); // always refresh results, not just when running
     }).catch(() => {});
