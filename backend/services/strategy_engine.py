@@ -9,6 +9,7 @@ from database import SessionLocal
 from services.market_data import get_ohlcv_multi
 from services.price_feed import get_current_prices
 from services.telegram_bot import notify_close, notify_open
+from services.bitget_data import get_market_context
 
 from services.risk_manager import (
     check_analyst_can_trade,
@@ -149,8 +150,58 @@ def _check_exits(db, current_prices: dict):
     return closed
 
 
+def _bitget_filter(strategy_name: str, signal, bitget_ctx: dict) -> tuple:
+    """
+    Apply Bitget live market data as a second-pass filter on top of strategy signals.
+    Returns (allowed: bool, reason: str).
+
+    Rules:
+    - Arbitrage: extreme funding rate blocks opposing direction (funding squeeze risk)
+    - Macro/Sentiment: crowded positioning (>68% longs or <32% longs) blocks trend-following
+    - Capital Flow: positive funding confirms long; negative confirms short
+    - Whale Hunting: open interest context appended to reason
+    """
+    if not bitget_ctx or signal.action == "hold":
+        return True, ""
+
+    rate = bitget_ctx.get("funding_rate", 0.0)      # % e.g. +0.012
+    long_pct = bitget_ctx.get("long_pct", 50.0)
+    oi = bitget_ctx.get("open_interest", 0)
+    action = signal.action
+
+    if strategy_name == "Arbitrage":
+        # Funding > 0.08%: longs paying heavily → don't open new longs (squeeze risk)
+        if rate > 0.08 and action == "long":
+            return False, f"Bitget funding {rate:+.4f}% too high — long squeeze risk blocked"
+        # Funding < -0.04%: shorts paying → don't open new shorts
+        if rate < -0.04 and action == "short":
+            return False, f"Bitget funding {rate:+.4f}% negative — short squeeze risk blocked"
+
+    elif strategy_name == "Macro/Sentiment":
+        # Crowd too long (>68%) → contrarian: block new longs
+        if long_pct > 68 and action == "long":
+            return False, f"Bitget crowd {long_pct:.0f}% long — too crowded, blocking long"
+        # Crowd too short (<32%) → contrarian: block new shorts
+        if long_pct < 32 and action == "short":
+            return False, f"Bitget crowd {long_pct:.0f}% long — oversold crowd, blocking short"
+
+    elif strategy_name == "Capital Flow":
+        # Funding confirms trend: positive funding = bullish flow
+        if rate > 0.02 and action == "short":
+            return False, f"Bitget funding {rate:+.4f}% — capital inflow, blocking short"
+        if rate < -0.02 and action == "long":
+            return False, f"Bitget funding {rate:+.4f}% — capital outflow, blocking long"
+
+    elif strategy_name == "Whale Hunting":
+        # Append OI context to reason (informational, never blocks)
+        if oi > 0:
+            signal.reason += f" | Bitget OI={oi:,.0f} BTC"
+
+    return True, ""
+
+
 async def _run_one_analyst(
-    analyst, strategy, ohlcv_map: dict, current_prices: dict, db
+    analyst, strategy, ohlcv_map: dict, current_prices: dict, db, bitget_ctx: dict | None = None
 ):
     """Evaluate signal and optionally open a new position for one analyst."""
     # Risk checks: analyst-level pause + daily loss
@@ -181,6 +232,13 @@ async def _run_one_analyst(
     print(f"  [{analyst.name}] {analyst.strategy} -> {signal.action} | {signal.reason[:60]}")
     if signal.action not in ("long", "short"):
         return
+
+    # Bitget second-pass filter
+    if bitget_ctx:
+        allowed, block_reason = _bitget_filter(analyst.strategy, signal, bitget_ctx)
+        if not allowed:
+            print(f"  [{analyst.name}] BLOCKED by Bitget filter: {block_reason}")
+            return
 
     # Use primary symbol for the trade
     primary = strategy.symbols[0]
@@ -280,8 +338,18 @@ async def strategy_engine_loop():
             if not port_ok:
                 print(f"  [RISK] CIRCUIT BREAKER: {port_msg} - no new trades this tick")
 
-            # Fetch OHLCV for all symbols
-            ohlcv_map = await get_ohlcv_multi(ALL_SYMBOLS)
+            # Fetch OHLCV for all symbols + Bitget live context in parallel
+            ohlcv_map, bitget_ctx = await asyncio.gather(
+                get_ohlcv_multi(ALL_SYMBOLS),
+                get_market_context(),
+                return_exceptions=True,
+            )
+            if isinstance(ohlcv_map, Exception):
+                ohlcv_map = {}
+            if isinstance(bitget_ctx, Exception):
+                bitget_ctx = {}
+            else:
+                print(f"  [Bitget] {bitget_ctx.get('summary', 'no data')}")
 
             # 1. Check exit conditions for all open positions
             closed = _check_exits(db, current_prices)
@@ -296,7 +364,7 @@ async def strategy_engine_loop():
                 if not strategy:
                     continue
                 if port_ok:
-                    await _run_one_analyst(analyst, strategy, ohlcv_map, current_prices, db)
+                    await _run_one_analyst(analyst, strategy, ohlcv_map, current_prices, db, bitget_ctx)
 
             db.commit()
 
