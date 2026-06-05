@@ -58,18 +58,25 @@ async def generate_message(
     analyst, current_prices: dict, open_trades: list
 ) -> tuple[str, str]:
     """Returns (message_content, message_type). Tries Claude API first."""
+    from services.bitget_data import get_market_context
+
+    try:
+        bitget_ctx = await get_market_context()
+    except Exception:
+        bitget_ctx = {}
+
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
         try:
-            return await _claude_message(analyst, current_prices, open_trades, api_key)
+            return await _claude_message(analyst, current_prices, open_trades, api_key, bitget_ctx)
         except Exception as e:
             print(f"[ai_analyst] Claude API error for {analyst.name}: {e}")
 
-    return _fallback_message(analyst, open_trades)
+    return _fallback_message(analyst, open_trades, bitget_ctx)
 
 
 async def _claude_message(
-    analyst, prices: dict, open_trades: list, api_key: str
+    analyst, prices: dict, open_trades: list, api_key: str, bitget_ctx: dict
 ) -> tuple[str, str]:
     import anthropic
 
@@ -90,13 +97,19 @@ async def _claude_message(
 
     msg_type = random.choice(["analysis", "signal", "alert"])
 
+    bitget_line = ""
+    if bitget_ctx.get("summary"):
+        bitget_line = f"Bitget market intel: {bitget_ctx['summary']}\n"
+
     prompt = (
         f"You are {analyst.name}, a crypto derivatives trader on a team of 10 specialists.\n"
         f"Your strategy: {analyst.strategy} — {analyst.strategy_description}\n"
         f"Market now: BTC ${btc_p:,.0f} ({btc_ch:+.1f}% 24h), ETH ${eth_p:,.0f}\n"
+        f"{bitget_line}"
         f"Your open positions: {pos_str}\n\n"
         f"Post ONE concise message ({msg_type}) to the team group chat (2-4 sentences).\n"
         f"Be specific about price levels and patterns your strategy identifies.\n"
+        f"If relevant to your strategy, reference the funding rate or long/short ratio.\n"
         f"Sound like a real trader — no filler phrases, no 'As a {analyst.strategy} trader...'."
     )
 
@@ -109,12 +122,23 @@ async def _claude_message(
     return content, msg_type
 
 
-def _fallback_message(analyst, open_trades: list) -> tuple[str, str]:
+def _fallback_message(analyst, open_trades: list, bitget_ctx: dict | None = None) -> tuple[str, str]:
     strategy = analyst.strategy
     templates = _TEMPLATES.get(
         strategy, ["Monitoring market conditions. No high-conviction setup yet."]
     )
     msg = random.choice(templates)
+
+    # Append Bitget live data for strategies that care
+    if bitget_ctx and random.random() > 0.4:
+        rate = bitget_ctx.get("funding_rate", 0)
+        long_pct = bitget_ctx.get("long_pct", 50)
+        sentiment = bitget_ctx.get("sentiment", "neutral")
+        strategy = analyst.strategy
+        if strategy in ("Arbitrage", "Capital Flow", "Macro/Sentiment"):
+            msg += f" Bitget funding {rate:+.4f}% — {sentiment} ({long_pct:.0f}% longs)."
+        elif strategy in ("Whale Hunting", "On-chain Data", "Liquidity"):
+            msg += f" Crowd positioning {long_pct:.0f}% long on Bitget perps — watch for squeeze."
 
     # If analyst has an open position, sometimes append trade status
     if open_trades and random.random() > 0.5:
