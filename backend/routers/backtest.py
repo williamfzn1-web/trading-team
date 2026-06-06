@@ -56,7 +56,11 @@ async def _run_one(run_id: int, strategy_name: str, period_days: int):
             fresh_cls = strategy_cls  # fallback to cached class if reload fails
         strategy = fresh_cls()
         print(f"[backtest] {strategy_name} fetching {period_days}d history...")
-        ohlcv_map = await fetch_historical_multi(strategy.symbols, days=period_days)
+        from services.bitget_history import get_backtest_bitget_history
+        ohlcv_map, bitget_history = await asyncio.gather(
+            fetch_historical_multi(strategy.symbols, days=period_days),
+            get_backtest_bitget_history(days=period_days),
+        )
 
         if not any(ohlcv_map.values()):
             run.status = "failed"
@@ -66,7 +70,7 @@ async def _run_one(run_id: int, strategy_name: str, period_days: int):
 
         print(f"[backtest] {strategy_name} simulating...")
         trades, metrics, equity_curve = await asyncio.to_thread(
-            simulate, strategy, ohlcv_map
+            simulate, strategy, ohlcv_map, True, bitget_history, strategy_name
         )
 
         # Check if cancelled while simulation was running
@@ -110,7 +114,7 @@ async def _run_one(run_id: int, strategy_name: str, period_days: int):
 @router.post("/run")
 async def trigger_backtest(
     background_tasks: BackgroundTasks,
-    days: int = 540,
+    days: int = 180,
     db: Session = Depends(get_db),
 ):
     """Start backtest for all 10 strategies. Returns immediately."""
@@ -254,7 +258,11 @@ async def _run_walk_forward_one(wf_id: int, strategy_name: str,
         # which covers the Dec 2025 bull run and gives positive train/test consistency
         total_days = train_days + test_days + step_days + 20  # = 260 days
         print(f"[wf] {strategy_name} fetching {total_days}d history...")
-        ohlcv_map = await fetch_historical_multi(strategy.symbols, days=total_days)
+        from services.bitget_history import get_backtest_bitget_history
+        ohlcv_map, bitget_history = await asyncio.gather(
+            fetch_historical_multi(strategy.symbols, days=total_days),
+            get_backtest_bitget_history(days=total_days),
+        )
 
         if not any(ohlcv_map.values()):
             wf.status = "failed"
@@ -264,7 +272,8 @@ async def _run_walk_forward_one(wf_id: int, strategy_name: str,
 
         print(f"[wf] {strategy_name} running walk-forward...")
         windows = await asyncio.to_thread(
-            run_walk_forward, strategy, ohlcv_map, train_days, test_days, step_days
+            run_walk_forward, strategy, ohlcv_map, train_days, test_days, step_days,
+            bitget_history, strategy_name
         )
 
         wf.status = "completed"

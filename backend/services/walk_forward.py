@@ -53,6 +53,8 @@ def run_walk_forward(
     train_days: int = 120,
     test_days: int = 60,
     step_days: int = 60,
+    bitget_history: dict | None = None,
+    strategy_name: str = "",
 ) -> list[dict]:
     """
     Returns a list of window results. Each entry:
@@ -101,8 +103,8 @@ def run_walk_forward(
             if sym in ohlcv_map
         }
 
-        train_trades, train_metrics, _ = simulate(strategy, train_slice)
-        test_trades, test_metrics, _ = simulate(strategy, test_slice)
+        train_trades, train_metrics, _ = simulate(strategy, train_slice, bitget_history=bitget_history, strategy_name=strategy_name)
+        test_trades, test_metrics, _ = simulate(strategy, test_slice, bitget_history=bitget_history, strategy_name=strategy_name)
 
         t_ret = train_metrics.get("total_return_pct", 0)
         ts_ret = test_metrics.get("total_return_pct", 0)
