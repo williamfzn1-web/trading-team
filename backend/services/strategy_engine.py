@@ -155,7 +155,7 @@ def _bitget_filter(strategy_name: str, signal, bitget_ctx: dict) -> tuple:
     Apply Bitget live market data as a second-pass filter on top of strategy signals.
     Returns (allowed: bool, reason: str).
 
-    Integrated strategies (11 total):
+    Integrated strategies (14 total):
     - Arbitrage: extreme funding blocks opposing direction
     - Macro/Sentiment: crowd positioning blocks trend-following
     - Capital Flow: funding rate confirms or blocks flow direction
@@ -167,6 +167,9 @@ def _bitget_filter(strategy_name: str, signal, bitget_ctx: dict) -> tuple:
     - Order Flow: funding must align with VDP direction
     - Mean Reversion: extreme funding strengthens contrarian signal
     - Auction Theory: funding + crowd confirms auction balance/imbalance
+    - SuperTrend: negative funding blocks oversold bounce (shorts being paid)
+    - Order Book Imbalance: funding + crowd confirms divergence validity
+    - ICT Fair Value Gap: crowded longs + high funding = FVG becomes trap
     """
     if not bitget_ctx or signal.action == "hold":
         return True, ""
@@ -277,6 +280,39 @@ def _bitget_filter(strategy_name: str, signal, bitget_ctx: dict) -> tuple:
         if long_pct > 65 and action == "long":
             return False, f"Bitget {long_pct:.0f}% long — auction crowd skewed, blocking long"
         signal.reason += f" | Bitget {rate:+.4f}% / {long_pct:.0f}%L"
+
+    # ── SuperTrend ─────────────────────────────────────────────────────────────
+    # Oversold bounce needs funding to flip bullish; negative funding = shorts paid, no bounce fuel
+    elif strategy_name == "SuperTrend":
+        if action == "long" and rate < -0.04:
+            return False, f"Bitget funding {rate:+.4f}% — shorts being paid, oversold bounce blocked"
+        if action == "long" and long_pct > 65:
+            return False, f"Bitget {long_pct:.0f}% long — crowd too long, no contrarian bounce fuel"
+        if action == "short" and rate > 0.07:
+            return False, f"Bitget funding {rate:+.4f}% — longs being paid, short bounce blocked"
+        signal.reason += f" | Bitget {rate:+.4f}% LSR {long_pct:.0f}%L"
+
+    # ── Order Book Imbalance ───────────────────────────────────────────────────
+    # RSI divergence requires real buying pressure; extreme funding = divergence is noise
+    elif strategy_name == "Order Book Imbalance":
+        if action == "long" and rate < -0.03:
+            return False, f"Bitget funding {rate:+.4f}% — divergence unreliable, shorts paid"
+        if action == "long" and long_pct < 35:
+            return False, f"Bitget {long_pct:.0f}% long — too few longs, no real buying pressure"
+        if action == "short" and rate > 0.06:
+            return False, f"Bitget funding {rate:+.4f}% — divergence unreliable, longs paid"
+        signal.reason += f" | Bitget {rate:+.4f}% LSR {long_pct:.0f}%L"
+
+    # ── ICT Fair Value Gap ─────────────────────────────────────────────────────
+    # FVG fill assumes institutional balance; crowded positioning turns FVG into liquidity trap
+    elif strategy_name == "ICT Fair Value Gap":
+        if action == "long" and rate > 0.07:
+            return False, f"Bitget funding {rate:+.4f}% — longs overloaded, FVG fill may fail"
+        if action == "long" and long_pct > 68:
+            return False, f"Bitget {long_pct:.0f}% long — crowd too long, FVG trap risk"
+        if action == "short" and rate < -0.03:
+            return False, f"Bitget funding {rate:+.4f}% — shorts overloaded, FVG short blocked"
+        signal.reason += f" | Bitget {rate:+.4f}% {long_pct:.0f}%L"
 
     return True, ""
 

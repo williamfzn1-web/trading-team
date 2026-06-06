@@ -139,6 +139,18 @@ def _backtest_bitget_filter(strategy_name: str, action: str, ctx: dict) -> bool:
         if action == "long" and rate < -0.04: return False
         if action == "short" and rate > 0.06: return False
         if long_pct > 65 and action == "long": return False
+    elif strategy_name == "SuperTrend":
+        if action == "long" and rate < -0.04: return False
+        if action == "long" and long_pct > 65: return False
+        if action == "short" and rate > 0.07: return False
+    elif strategy_name == "Order Book Imbalance":
+        if action == "long" and rate < -0.03: return False
+        if action == "long" and long_pct < 35: return False
+        if action == "short" and rate > 0.06: return False
+    elif strategy_name == "ICT Fair Value Gap":
+        if action == "long" and rate > 0.07: return False
+        if action == "long" and long_pct > 68: return False
+        if action == "short" and rate < -0.03: return False
     return True
 
 
