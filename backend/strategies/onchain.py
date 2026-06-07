@@ -29,15 +29,21 @@ class OnChainStrategy(BaseStrategy):
         e50_rising = e50[-1] > e50[-10]
         e50_falling = e50[-1] < e50[-10]
 
+        # V2: EMA200 macro health — 50-bar slope confirms macro trend still valid
+        # Prevents longs in early correction, prevents shorts in early recovery
+        e200_bull_macro = e200[-1] > e200[-50]
+        e200_bear_macro = e200[-1] < e200[-50]
+
         sl_pct = max(curr_atr * 1.5 / curr, 0.018)
         tp_pct = sl_pct * 3.0
 
         # LONG: uptrend, EMA50 rising, price dipped below EMA50 in last 3 bars then recovered
+        # V2: require decisive recovery (+0.3% above EMA50) to filter borderline touches
         dipped_then_recovered = (
             any(closes[-(i + 1)] < e50[-(i + 1)] for i in range(1, 4))
-            and curr > e50[-1]
+            and curr > e50[-1] * 1.003
         )
-        if uptrend and e50_rising and dipped_then_recovered and 38 < curr_rsi < 62:
+        if uptrend and e50_rising and dipped_then_recovered and e200_bull_macro and 38 < curr_rsi < 62:
             return Signal(
                 "long",
                 confidence=0.72,
@@ -47,11 +53,12 @@ class OnChainStrategy(BaseStrategy):
             )
 
         # SHORT: downtrend, EMA50 falling, price bounced above EMA50 in last 3 bars then rejected
+        # V2: require decisive rejection (-0.3% below EMA50)
         bounced_then_rejected = (
             any(closes[-(i + 1)] > e50[-(i + 1)] for i in range(1, 4))
-            and curr < e50[-1]
+            and curr < e50[-1] * 0.997
         )
-        if not uptrend and e50_falling and bounced_then_rejected and 38 < curr_rsi < 62:
+        if not uptrend and e50_falling and bounced_then_rejected and e200_bear_macro and 38 < curr_rsi < 62:
             return Signal(
                 "short",
                 confidence=0.70,

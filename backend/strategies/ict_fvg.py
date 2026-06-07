@@ -54,11 +54,18 @@ class ICTFairValueGapStrategy(BaseStrategy):
         rsi_3ago = rsi(closes[:-3]) if len(closes) > 17 else curr_rsi
         _, _, hist = macd(closes)
 
-        # V4.1 key change: EMA20/50 only (drop EMA200 requirement)
+        # V4.1: EMA20/50 only (drop EMA200 price requirement)
         e50 = ema(closes, 50)
         e20 = ema(closes, 20)
+        e200 = ema(closes, 200)
         uptrend = curr > e50[-1] and e20[-1] > e50[-1]
         downtrend = curr < e50[-1] and e20[-1] < e50[-1]
+
+        # V4.2: EMA200 slope gate for LONGS only
+        # Only go long when macro momentum still healthy (EMA200 rising over 20 bars)
+        # Shorts keep V4.1 logic (EMA20 < EMA50) — no EMA200 slope gate,
+        # so we don't generate aggressive shorts during corrections that then recover
+        e200_rising = e200[-1] > e200[-20]
 
         last = ohlcv[-1]
         prev = ohlcv[-2]
@@ -77,7 +84,8 @@ class ICTFairValueGapStrategy(BaseStrategy):
                 prev_in_gap
                 and curr_above_gap
                 and uptrend
-                and 42 < curr_rsi < 60  # unchanged from V23
+                and e200_rising   # V4.2: macro slope still up
+                and 42 < curr_rsi < 60
                 and rsi_rising
                 and hist > 0
                 and last[4] > last[1]
@@ -97,8 +105,8 @@ class ICTFairValueGapStrategy(BaseStrategy):
             if (
                 prev_in_gap
                 and curr_below_gap
-                and downtrend
-                and 40 < curr_rsi < 58  # unchanged from V23
+                and downtrend  # V4.1 short condition restored: EMA20 < EMA50 sufficient
+                and 40 < curr_rsi < 58
                 and rsi_falling
                 and hist < 0
                 and last[4] < last[1]

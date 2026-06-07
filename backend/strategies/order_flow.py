@@ -28,9 +28,14 @@ class OrderFlowStrategy(BaseStrategy):
         uptrend = e50[-1] > e200[-1]
         downtrend = e50[-1] < e200[-1]
 
-        # EMA50 direction confirmed over 20 bars (was 8 — too noisy)
+        # EMA50 direction confirmed over 20 bars
         e50_rising = e50[-1] > e50[-20]
         e50_falling = e50[-1] < e50[-20]
+
+        # V2: EMA200 macro health — 50-bar slope confirms macro trend still healthy
+        # Prevents new longs/shorts when macro momentum is reversing
+        e200_bull_macro = e200[-1] > e200[-50]
+        e200_bear_macro = e200[-1] < e200[-50]
 
         # VDP zero-cross with 10-bar lookback (was 5 — too short on 1h)
         vdp_now = volume_delta_proxy(ohlcv, 14)
@@ -49,12 +54,13 @@ class OrderFlowStrategy(BaseStrategy):
         if curr_adx < 18:
             return Signal("hold", reason=f"ADX={curr_adx:.1f} < 18, no trend")
 
-        # LONG: structural uptrend + ADX confirmed + VDP cross + EMA50 zone
+        # LONG: structural uptrend + macro healthy + ADX confirmed + VDP cross + EMA50 zone
         if (
             vdp_crossed_up
             and near_ema50
             and uptrend
             and e50_rising
+            and e200_bull_macro  # V2: macro momentum still up
             and 35 < curr_rsi < 62
         ):
             return Signal(
@@ -65,12 +71,13 @@ class OrderFlowStrategy(BaseStrategy):
                 reason=f"VDP 0-cross up at EMA50, ADX={curr_adx:.0f}, RSI={curr_rsi:.0f}",
             )
 
-        # SHORT: structural downtrend + ADX confirmed + VDP cross + EMA50 zone
+        # SHORT: structural downtrend + macro declining + ADX confirmed + VDP cross + EMA50 zone
         if (
             vdp_crossed_down
             and near_ema50
             and downtrend
             and e50_falling
+            and e200_bear_macro  # V2: macro momentum declining
             and 38 < curr_rsi < 65
         ):
             return Signal(
